@@ -94,7 +94,7 @@ for (i in seq_along(n)) {
   col = rep('lightgrey', times=length(p.val))
   c = which(dfGenes$adj.P.Val < 0.1)
   col[c] = 'red'
-  plot(fc, p.val, pch=20, xlab='Fold Change', ylab='-log10 P.Value', col=col, main=paste(names(n[i])), xlim=c(-3, 3))
+  plot(fc, p.val, pch=20, xlab='Fold Change', ylab='-log10 P.Value', col=col, main=paste(names(n[i])), xlim=c(-5, 5))
   abline(v = 0, col='grey', lty=2)
   abline(h = y.cut, col='red', lty=2)
   # second cutoff for adjusted p-values
@@ -106,13 +106,25 @@ for (i in seq_along(n)) {
   text(dfGenes$logFC[g], y = p.val[g], labels = lab, pos=2, cex=0.6)
 }
 
+### group the genes
+dfRes = topTable(fit, adjust='BH', number=Inf, p.value=0.1)
+n = (which(sapply(lSigGenes.adj, length) >= 10)) + 1
+cvCommonGenes = NULL
+for (i in seq_along(n)) {
+  cvCommonGenes = append(cvCommonGenes, lSigGenes.adj[[names(n[i])]])
+}
+cvCommonGenes = unique(cvCommonGenes)
+mCommonGenes = sapply(seq_along(n), function(x) cvCommonGenes %in% lSigGenes.adj[[names(n[x])]])
+rownames(mCommonGenes) = cvCommonGenes
+colnames(mCommonGenes) = names(n)
+
 
 ########### pathway analysis using CGraph library
 source('../CGraphClust/CGraphClust.R')
 library(downloader)
 p.old = par()
 # uniprot annotation for data
-cvGenes = as.character(unique(unlist(lSigGenes.adj)))
+cvGenes = rownames(mCommonGenes)
 dfGenes = dfAnnotation
 rownames(dfGenes) = as.character(dfGenes$UNIPROT)
 
@@ -129,8 +141,8 @@ dfReactome$V2 = x
 dfReactome.sub = dfReactome[dfReactome$V1 %in% dfGenes$UNIPROT,]
 # get the matching positions for uniprot ids in the reactome table
 i = match(dfReactome.sub$V1, dfGenes$UNIPROT)
-dfReactome.sub$UNIPROT = dfGenes$UNIPROT[i]
-dfGraph = dfReactome.sub[,c('UNIPROT', 'V2')]
+dfReactome.sub$SYMBOL = dfGenes$SYMBOL[i]
+dfGraph = dfReactome.sub[,c('SYMBOL', 'V2')]
 dfGraph = na.omit(dfGraph)
 
 # get expression data
@@ -150,9 +162,11 @@ colnames(mCounts) = fGroups
 mCounts = mCounts[,order(fGroups)]
 fGroups = fGroups[order(fGroups)]
 mCounts = t(mCounts)
-
+# replace colnames from uniprot to symbols
+cn = dfGenes[colnames(mCounts), 'SYMBOL']
+colnames(mCounts) = cn
 # select genes that have a reactome term attached
-n = unique(dfGraph$UNIPROT)
+n = unique(dfGraph$SYMBOL)
 mCounts = mCounts[,n]
 print(paste('Total number of genes with Reactome terms', length(n)))
 levels(fGroups)
@@ -189,12 +203,12 @@ plot.final.graph(oGr)
 ig = getFinalGraph(oGr)
 par(mar=c(1,1,1,1)+0.1)
 set.seed(1)
-ig = f_igCalculateVertexSizesAndColors(ig, t(mCounts), fGroups, bColor = T, iSize = 20)
+ig = f_igCalculateVertexSizesAndColors(ig, t(mCounts), fGroups, bColor = T, iSize = 10)
 plot(getCommunity(oGr), ig, vertex.label=NA, layout=layout_with_fr, 
      vertex.frame.color=NA, mark.groups=NULL, edge.color='lightgrey')
 set.seed(1)
 ig = getFinalGraph(oGr)
-ig = f_igCalculateVertexSizesAndColors(ig, t(mCounts), fGroups, bColor = F, iSize = 20)
+ig = f_igCalculateVertexSizesAndColors(ig, t(mCounts), fGroups, bColor = F, iSize = 10)
 plot(getCommunity(oGr), ig, vertex.label=NA, layout=layout_with_fr, 
      vertex.frame.color=NA, edge.color='darkgrey')
 
@@ -210,6 +224,26 @@ plot.centrality.diagnostics(oGr)
 # get the centrality parameters
 mCent = mPrintCentralitySummary(oGr)
 
+### function to get gene annotation
+f_dfGetGeneAnnotation = function(cvSymbol = NULL) {
+  df = dfGenes[dfGenes$SYMBOL %in% cvSymbol,]
+  return(df)
+}
+
+dfTopGenes.cent = dfGetTopVertices(oGr, iQuantile = 0.90)
+rownames(dfTopGenes.cent) = dfTopGenes.cent$VertexID
+# assign metadata annotation to these genes and clusters
+dfCluster = getClusterMapping(oGr)
+colnames(dfCluster) = c('gene', 'cluster')
+rownames(dfCluster) = dfCluster$gene
+df = f_dfGetGeneAnnotation(as.character(dfTopGenes.cent$VertexID))
+dfTopGenes.cent = cbind(dfTopGenes.cent[as.character(df$SYMBOL),], SYMBOL=df$SYMBOL, GENENAME=df$GENENAME)
+dfCluster = dfCluster[as.character(dfTopGenes.cent$VertexID),]
+dfTopGenes.cent = cbind(dfTopGenes.cent, Cluster=dfCluster$cluster)
+
+dir.create('Results', showWarnings = F)
+write.csv(dfTopGenes.cent, file='Results/Top_Centrality_Genes.csv')
+
 ## we can look at the problem from the other direction and look at clusters instead of genes
 # sample plots
 # mean expression of groups in every cluster
@@ -217,7 +251,7 @@ par(p.old)
 plot.mean.expressions(oGr, t(mCounts), fGroups, legend.pos = 'bottomleft', main='Total Change in Each Cluster', cex.axis=0.7)
 # only significant clusters
 par(mar=c(7, 3, 2, 2)+0.1)
-plot.significant.expressions(oGr, t(mCounts), fGroups, main='Significant Clusters', lwd=1, bStabalize = T, cex.axis=0.7)
+m = plot.significant.expressions(oGr, t(mCounts), fGroups, main='Significant Clusters', lwd=1, bStabalize = T, cex.axis=0.7)
 # principal component plots
 pr.out = plot.components(oGr, t(mCounts), fGroups, bStabalize = T)
 par(mar=c(4,2,4,2))
@@ -227,7 +261,7 @@ biplot(pr.out, cex=0.8, cex.axis=0.8, arrow.len = 0)
 plot.heatmap.significant.clusters(oGr, t(mCounts), fGroups, bStabalize = F)
 # plot variance of cluster
 m = getSignificantClusters(oGr, t(mCounts), fGroups)$clusters
-m = getClusterMarginal(oGr, t(mCounts))
+#m = getClusterMarginal(oGr, t(mCounts))
 
 csClust = rownames(m)
 length(csClust)
@@ -241,61 +275,7 @@ plot.cluster.variance(oGr, temp, fGroups, log=FALSE); i = i+1
 
 boxplot.cluster.variance(oGr, m, fGroups, log=T, iDrawCount = length(csClust), las=2)
 
-# Various plots for one cluster of choice
-csClust = '1280215'
 
-lev = levels(fGroups)[-1]
-m = mCounts
-#m = apply(m, 2, function(x) f_ivStabilizeData(x, fGroups))
-#rownames(m) = rownames(mCounts)
-par(mar=c(1,1,1,1)+0.1)
-for(i in 1:length(lev)){
-  ig = getClusterSubgraph(oGr, csClust)
-  fG = factor(fGroups, levels= c(levels(fGroups)[1], lev[-i], lev[i]) )
-  ig = f_igCalculateVertexSizesAndColors(ig, t(m), fG, bColor = T, iSize=60)
-  n = V(ig)$name
-  lab = f_dfGetGeneAnnotation(n)
-  V(ig)$label = as.character(lab$SYMBOL)
-  set.seed(1)
-  plot(ig, vertex.label.cex=0.7, layout=layout_with_fr, vertex.frame.color='darkgrey', edge.color='lightgrey',
-       main=paste(lev[i], 'vs', levels(fGroups)[1]))
-  legend('topright', legend = c('Underexpressed', 'Overexpressed'), fill = c('lightblue', 'pink'))
-}
-
-# heatmap of the genes
-ig.sub = getClusterSubgraph(oGr, csClustLabel = csClust)
-n = f_dfGetGeneAnnotation(V(ig.sub)$name)
-mC = t(mCounts)
-mC = mC[n$ENTREZID,]
-rownames(mC) = n$SYMBOL
-mC = t(scale(t(mC)))
-# threshhold the values
-mC[mC < -3] = -3
-mC[mC > +3] = +3
-# draw the heatmap
-hc = hclust(dist(mC))
-aheatmap(mC, color=c('blue', 'black', 'red'), breaks=0, scale='none', Rowv = hc, annRow=NA, 
-         annColors=NA, Colv=NA)
-
-
-# if we want to plot variance of one gene at a time
-n = f_dfGetGeneAnnotation(V(ig.sub)$name)
-mC = t(mCounts)
-mC = mC[n$ENTREZID,]
-rownames(mC) = n$SYMBOL
-rn = rownames(mC)
-length(rn)
-i = 1
-
-par(p.old)
-par(mfrow=c(3,3))
-boxplot.cluster.variance(oGr, (mC), fGroups, iDrawCount = length(rn))
-temp = t(as.matrix(mC[rn[i],]))
-rownames(temp) = rn[i]
-plot.cluster.variance(oGr, temp, fGroups, log=FALSE); i = i+1
-
-
-### plot all clusters in graph
 dfCluster = getClusterMapping(oGr)
 colnames(dfCluster) = c('gene', 'cluster')
 rownames(dfCluster) = dfCluster$gene
@@ -303,6 +283,10 @@ rownames(dfCluster) = dfCluster$gene
 sort(table(dfCluster$cluster))
 #csClust = rownames(m$clusters)
 csClust = as.character(unique(dfCluster$cluster))
+
+df = f_dfGetGeneAnnotation(as.character(dfCluster$gene))
+dfCluster = cbind(dfCluster[as.character(df$SYMBOL),], SYMBOL=df$SYMBOL, GENENAME=df$GENENAME)
+write.csv(dfCluster, file='Results/Clusters.csv')
 
 
 # plot the graphs at each contrast
@@ -314,7 +298,7 @@ par(mar=c(1,1,1,1)+0.1)
 for(i in 1:length(lev)){
   ig = getClusterSubgraph(oGr, csClust)
   fG = factor(fGroups, levels= c(levels(fGroups)[1], lev[-i], lev[i]) )
-  ig = f_igCalculateVertexSizesAndColors(ig, t(m), fG, bColor = T, iSize=30)
+  ig = f_igCalculateVertexSizesAndColors(ig, t(m), fG, bColor = T, iSize=10)
   n = V(ig)$name
   lab = f_dfGetGeneAnnotation(n)
   V(ig)$label = as.character(lab$SYMBOL)
@@ -323,6 +307,9 @@ for(i in 1:length(lev)){
        main=paste(lev[i], 'vs', levels(fGroups)[1]))
   legend('topright', legend = c('Underexpressed', 'Overexpressed'), fill = c('lightblue', 'pink'))
 }
+
+
+
 
 
 
